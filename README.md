@@ -27,7 +27,7 @@ flowchart LR
     D[Daily page check<br/>GitHub Actions] -->|page changed| L[Gemini reads the page<br/>quotes every value]
     L --> V[Validation]
     V -->|new values| PR[Pull request<br/>with evidence]
-    V -->|nothing new| I[Issue with the diff]
+    V -->|nothing new| I[Closed issue<br/>kept as a record]
     PR -->|a person merges| Y
 ```
 
@@ -40,7 +40,7 @@ The whole system is one GitHub repo. A YAML file is the database, GitHub Actions
 3. **Compare** it with yesterday's snapshot. Most days nothing changes and the run stops there.
 4. **Extract**: for a changed page, Gemini gets all of that race's pages and returns the race date, ballot dates, results date, entry date, price and status as JSON, quoting the sentence each value came from.
 5. **Validate**: every quote must actually appear on the page, race dates must belong to the right year, and the updated record must pass the same checks as hand-entered data (a ballot can't close before it opens, and so on). Anything that fails is dropped and listed for a person.
-6. **Propose**: a pull request edits only that race's lines in `races.yaml` and shows the old value, new value and evidence for each field. Merging it rebuilds the site and calendar feeds.
+6. **Propose**: a pull request edits only that race's lines in `races.yaml` and shows the old value, new value and evidence for each field. Merging it rebuilds the site and calendar feeds. If the race's details didn't change (a new menu button, say), the bot files an already-closed issue as a record instead, so noise needs no attention; if the LLM couldn't run or found something it won't fill in itself, the issue stays open for a person.
 
 If a page fails to load for 7 days in a row (some sites block cloud servers), the bot opens an issue suggesting the race be checked by hand, and closes it if the page comes back. Pages that stop being watched have their saved copy deleted.
 

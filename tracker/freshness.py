@@ -2,7 +2,9 @@
 
 `last_verified` in races.yaml only changes when a person confirms values (by
 hand or by merging a bot pull request). The daily check adds what it knows:
-whether the race's pages loaded, and whether they've changed since then.
+whether the race's pages loaded, and whether they've changed since then in a
+way nobody has reviewed (the LLM clears changes that leave the race's details
+as they were).
 """
 
 from __future__ import annotations
@@ -38,7 +40,11 @@ def race_freshness(race: Race, states: dict[str, PageState], today: date) -> Rac
         return RaceFreshness(Freshness.unknown, "")
 
     changed = [_day(s.last_changed) for s in pages if s.last_changed]
-    if changed and (race.last_verified is None or max(changed) > race.last_verified):
+    # A change counts as reviewed once a person verifies the race, or the LLM read the
+    # pages and found none of the race's details had changed.
+    reviewed = [race.last_verified] if race.last_verified else []
+    reviewed += [_day(s.last_cleared) for s in pages if s.last_cleared]
+    if changed and (not reviewed or max(changed) > max(reviewed)):
         return RaceFreshness(Freshness.changed, f"page changed {_fmt(max(changed))}: being reviewed")
 
     oks = [_day(s.last_ok) for s in pages if s.last_ok]

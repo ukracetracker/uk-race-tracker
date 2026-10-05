@@ -53,3 +53,14 @@ def test_manual_and_unknown(race, confirmed_race):
 
 def test_states_are_looked_up_by_url():
     assert states_by_url({"key": state(HOME)}) == {HOME: state(HOME)}
+
+
+def test_a_change_the_llm_cleared_counts_as_reviewed(race):
+    states = {
+        HOME: state(HOME, last_changed="2026-10-08T06:00:00+00:00"),
+        BALLOT: PageState(url=BALLOT, last_ok="2026-10-10T06:00:00+00:00", last_changed="2026-10-08T06:00:00+00:00",
+                          last_cleared="2026-10-08T06:01:00+00:00"),
+    }
+    assert race_freshness(race, states, TODAY).status == Freshness.unchanged
+    states[HOME].last_changed = "2026-10-09T06:00:00+00:00"  # a newer change nobody has cleared
+    assert race_freshness(race, states, TODAY).status == Freshness.changed

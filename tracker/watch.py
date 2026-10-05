@@ -56,6 +56,7 @@ class PageState:
     last_result: str | None = None
     consecutive_failures: int = 0
     failing_since: str | None = None  # first failure in the current run of failures
+    last_cleared: str | None = None  # when the LLM last found no race details changed on this page
 
 
 @dataclass
@@ -97,6 +98,9 @@ class StateStore:
         self.text_dir = root / "pages"
         raw = json.loads(self.index_path.read_text(encoding="utf-8")) if self.index_path.exists() else {}
         self.pages = {key: PageState(**value) for key, value in raw.items()}
+
+    def pages_by_url(self) -> dict[str, PageState]:
+        return {state.url: state for state in self.pages.values()}
 
     def get(self, page: Page) -> PageState:
         return self.pages.setdefault(page.key, PageState(url=page.url))

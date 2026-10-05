@@ -119,8 +119,8 @@ def test_propose_update_opens_a_pull_request_with_a_valid_edit(tmp_path, confirm
     race = Race.model_validate(confirmed_race)
     pulls = FakePulls(YAML)
     llm = FakeLLM(raw(status=("ballot_closed", "The ballot closes at midnight on 5 May 2026.")))
-    url, note = propose_update(race, stored(tmp_path, race), {BALLOT: ["+x"]}, llm, pulls, NOW)
-    assert url == "https://github.com/o/r/pull/9" and note == ""
+    outcome = propose_update(race, stored(tmp_path, race), {BALLOT: ["+x"]}, llm, pulls, NOW)
+    assert outcome.kind == "pr" and outcome.url == "https://github.com/o/r/pull/9"
     race_id, new_text, title, _ = pulls.proposed[0]
     assert race_id == race.id and title == "Update Test Marathon: status"
     assert "    status: ballot_closed\n    last_verified: 2026-10-03\n" in new_text
@@ -130,8 +130,8 @@ def test_propose_update_notes_when_nothing_changed(tmp_path, confirmed_race):
     race = Race.model_validate(confirmed_race)
     pulls = FakePulls(YAML)
     llm = FakeLLM(raw(status=("announced", "Test Marathon")))
-    url, note = propose_update(race, stored(tmp_path, race), {}, llm, pulls, NOW)
-    assert url is None and "no changes to the race details found" in note
+    outcome = propose_update(race, stored(tmp_path, race), {}, llm, pulls, NOW)
+    assert outcome.kind == "cleared" and "no changes to the race details found" in outcome.note
     assert pulls.proposed == []
 
 
@@ -143,8 +143,8 @@ def test_propose_update_survives_llm_failures(tmp_path, confirmed_race):
             raise LLMError("daily quota used up")
 
     race = Race.model_validate(confirmed_race)
-    url, note = propose_update(race, stored(tmp_path, race), {}, Broken(None), FakePulls(YAML), NOW)
-    assert url is None and "couldn't run (daily quota used up)" in note
+    outcome = propose_update(race, stored(tmp_path, race), {}, Broken(None), FakePulls(YAML), NOW)
+    assert outcome.kind == "review" and "couldn't run (daily quota used up)" in outcome.note
 
 
 def test_refused_pull_request_falls_back_to_an_issue_note(tmp_path, confirmed_race):
@@ -155,6 +155,14 @@ def test_refused_pull_request_falls_back_to_an_issue_note(tmp_path, confirmed_ra
 
     race = Race.model_validate(confirmed_race)
     llm = FakeLLM(raw(status=("ballot_closed", "The ballot closes at midnight on 5 May 2026.")))
-    url, note = propose_update(race, stored(tmp_path, race), {}, llm, Refused(YAML), NOW)
-    assert url is None
+    outcome = propose_update(race, stored(tmp_path, race), {}, llm, Refused(YAML), NOW)
+    assert outcome.kind == "review"
+    note = outcome.note
     assert "pull request couldn't be opened" in note and "`status`: announced → ballot_closed" in note
+
+
+def test_things_for_a_person_keep_the_change_open_for_review(tmp_path, confirmed_race):
+    race = Race.model_validate(confirmed_race)
+    llm = FakeLLM(raw(ballot_opens=("2026-04-20", "Race day: Sunday 25 April 2027")))  # date with no time
+    outcome = propose_update(race, stored(tmp_path, race), {}, llm, FakePulls(YAML), NOW)
+    assert outcome.kind == "review" and "`ballot_opens`" in outcome.note

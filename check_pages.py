@@ -6,9 +6,12 @@
 
 With --issues, a page that has failed for --alert-after-days days gets one
 "page-unreachable" issue, which is closed automatically when the page loads
-again. A changed page gets a "page-change" issue with the diff, unless
-GEMINI_API_KEY is set: then the LLM reads the race's pages and, if it finds new
-values, a pull request proposes the races.yaml edit instead.
+again. When a race's pages change, it gets one "page-change" issue with the
+diffs. With GEMINI_API_KEY set, the LLM reads the race's pages first:
+  - new values: a pull request proposes the races.yaml edit instead of an issue
+  - nothing changed: the issue is opened already closed, as a record, and the
+    change counts as reviewed on the site
+  - anything else (LLM failed, values to check by hand): the issue stays open
 
     python check_pages.py --issues --propose-for cardiff-half-2027
                                       # run the LLM proposal for one race now,
@@ -20,6 +23,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -104,7 +108,11 @@ def main(argv: list[str] | None = None) -> int:
 
     issue_links: dict[str, str] = {}
     changed = [r for r in results if r.outcome == "changed"]
-    to_propose = {race.id: race for r in changed for race in r.page.races}
+    by_race: dict[str, tuple[Race, list[CheckResult]]] = {}
+    for r in changed:
+        for race in r.page.races:
+            by_race.setdefault(race.id, (race, []))[1].append(r)
+    to_propose = {race_id: race for race_id, (race, _) in by_race.items()}
     if args.propose_for:
         match = [race for race in races if race.id == args.propose_for]
         if not match:
@@ -112,30 +120,36 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         to_propose[match[0].id] = match[0]
 
-    notes: dict[str, str] = {}  # page url -> note for its change issue
+    outcomes: dict[str, Outcome] = {}
     if pulls and llm:
         for race in to_propose.values():
-            diffs = {r.page.url: r.diff for r in changed if race in r.page.races}
-            pr_url, note = propose_update(race, store, diffs, llm, pulls, now)
-            for url in diffs:
-                if pr_url:
-                    issue_links[url] = pr_url
-                else:
-                    notes[url] = notes.get(url, "") + note
+            race_results = by_race.get(race.id, (race, []))[1]
+            outcome = propose_update(race, store, {r.page.url: r.diff for r in race_results}, llm, pulls, now)
+            outcomes[race.id] = outcome
+            if outcome.kind == "cleared":
+                for url in race_urls(race):
+                    if url in store.pages_by_url():
+                        store.get(Page(url, [race])).last_cleared = now.isoformat(timespec="seconds")
             if args.propose_for == race.id:
-                print(f"Proposal for {race.id}: {pr_url or note.strip() or 'no pages to read'}")
+                print(f"Proposal for {race.id}: {outcome.url or outcome.note.strip() or outcome.kind}")
+        store.save()
+
+    for race_id, (race, race_results) in by_race.items():
+        outcome = outcomes.get(race_id, Outcome("review"))
+        link = outcome.url if outcome.kind == "pr" else None
+        if link is None and issues:
+            link = issues.report_change(race, race_results, now, outcome.note, cleared=outcome.kind == "cleared")
+        elif link is None:
+            for r in race_results:
+                print(f"\n=== Changed: {race.name} ({r.page.url})")
+                print("\n".join(r.diff))
+        for r in race_results:
+            if link:
+                issue_links[r.page.url] = link
 
     for result in results:
         link = None
-        if result.outcome == "changed":
-            if result.page.url in issue_links:
-                pass  # covered by a pull request
-            elif issues:
-                link = issues.report_change(result, now, notes.get(result.page.url, ""))
-            else:
-                print(f"\n=== Changed: {result.page.label} ({result.page.url})")
-                print("\n".join(result.diff))
-        elif result.outcome == "failed" and result.failing_days >= args.alert_after_days:
+        if result.outcome == "failed" and result.failing_days >= args.alert_after_days:
             if issues:
                 link = issues.report_unreachable(result)
             else:
@@ -154,40 +168,53 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+@dataclass
+class Outcome:
+    """What the LLM check decided for one race."""
+
+    kind: str  # "pr": proposed in a pull request; "cleared": nothing changed; "review": a person should look
+    url: str | None = None
+    note: str = ""
+
+
 def propose_update(
     race: Race, store: StateStore, diffs: dict[str, list[str]], llm: JsonLLM, pulls: GitHubPulls, now: datetime
-) -> tuple[str | None, str]:
-    """Run the LLM on the race's pages. Returns (pull request URL, "") or (None, note for the change issue)."""
+) -> Outcome:
+    """Run the LLM on the race's pages and open a pull request if it finds new values."""
     pages = {url: store.read_text(Page(url, [race])) for url in race_urls(race)}
     pages = {url: text for url, text in pages.items() if text}
     if not pages:
-        return None, ""
+        return Outcome("review")
     try:
         extraction = extract(race, pages, llm, now.date())
     except LLMError as exc:
-        return None, f"**LLM check for {race.name}:** couldn't run ({exc}).\n\n"
+        return Outcome("review", note=f"**LLM check for {race.name}:** couldn't run ({exc}).\n\n")
 
     proposal = build_proposal(extraction, pages, now.date())
-    for_a_person = "".join(f"- {n}\n" for n in proposal.for_a_person)
     if not proposal.has_changes:
-        detail = f"\n{for_a_person}" if for_a_person else ""
-        return None, f"**LLM check for {race.name}:** no changes to the race details found.{detail}\n\n"
+        if not proposal.for_a_person:
+            return Outcome("cleared", note=f"**LLM check for {race.name}:** no changes to the race details found.\n\n")
+        for_a_person = "".join(f"- {n}\n" for n in proposal.for_a_person)
+        return Outcome(
+            "review",
+            note=f"**LLM check for {race.name}:** no changes it could make itself, but check these:\n{for_a_person}\n",
+        )
 
     try:
         new_text = update_race(pulls.read_data_file(), race.id, proposal.updates)
         parse_races(new_text)
     except (KeyError, DataError) as exc:
-        return None, f"**LLM check for {race.name}:** proposed changes didn't pass validation ({exc}).\n\n"
+        return Outcome("review", note=f"**LLM check for {race.name}:** proposed changes didn't pass validation ({exc}).\n\n")
     except httpx.HTTPError as exc:
-        return None, f"**LLM check for {race.name}:** couldn't read races.yaml from GitHub ({exc}).\n\n"
+        return Outcome("review", note=f"**LLM check for {race.name}:** couldn't read races.yaml from GitHub ({exc}).\n\n")
     try:
-        return pulls.propose(race.id, new_text, pr_title(proposal), pr_body(proposal, diffs, llm.model)), ""
+        return Outcome("pr", url=pulls.propose(race.id, new_text, pr_title(proposal), pr_body(proposal, diffs, llm.model)))
     except httpx.HTTPError as exc:
         changes = "".join(f"- `{c.name}`: {format_cell(c.old)} → {format_cell(c.new)} (“{c.quote}”)\n" for c in proposal.changes)
-        return None, (
+        return Outcome("review", note=(
             f"**LLM check for {race.name}:** proposed these changes, but the pull request couldn't be opened "
             f"({exc}):\n{changes}\n"
-        )
+        ))
 
 
 if __name__ == "__main__":

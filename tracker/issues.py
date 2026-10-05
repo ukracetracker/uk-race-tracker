@@ -6,6 +6,7 @@ from datetime import datetime
 
 import httpx
 
+from tracker.models import Race
 from tracker.watch import CheckResult
 
 API = "https://api.github.com"
@@ -17,41 +18,44 @@ LABELS = {
 }
 
 
-def marker(url: str) -> str:
-    """Hidden tag that ties a change issue to one watched page, so repeat changes become comments."""
-    return f"<!-- page-watch: {url} -->"
+def marker(race_id: str) -> str:
+    """Hidden tag that ties a change issue to one race, so repeat changes become comments."""
+    return f"<!-- race-watch: {race_id} -->"
 
 
 def unreachable_marker(url: str) -> str:
     return f"<!-- page-unreachable: {url} -->"
 
 
-def issue_title(result: CheckResult) -> str:
-    return f"Page changed: {result.page.label}"
+def issue_title(race: Race, cleared: bool = False) -> str:
+    if cleared:
+        return f"Page changed, race details unchanged: {race.name}"
+    return f"Page changed: {race.name}"
 
 
-def change_report(result: CheckResult, now: datetime, note: str = "") -> str:
-    page = result.page
-    races = "\n".join(f"- {race.name} (`{race.id}`)" for race in page.races)
-    diff = "\n".join(result.diff) or "(no line-level differences)"
-    return f"""{marker(page.url)}
-The official page changed on {now:%a %d %b %Y}: {page.url}
-
-**Races using this page**
-{races}
-
-**What changed** (lines starting `-` were removed, `+` were added)
-
-```diff
-{diff}
-```
-
-{note}**To do**
+def change_report(race: Race, results: list[CheckResult], now: datetime, note: str = "", cleared: bool = False) -> str:
+    diffs = "".join(
+        f"\n**{r.page.url}** (lines starting `-` were removed, `+` were added)\n\n```diff\n"
+        + ("\n".join(r.diff) or "(no line-level differences)")
+        + "\n```\n"
+        for r in results
+    )
+    if cleared:
+        todo = (
+            "The LLM read the race's pages and found no changes to its dates, entry details or status, "
+            "so this was closed automatically. Reopen it if you spot something it missed."
+        )
+    else:
+        todo = """**To do**
 - [ ] Open the page and check whether any dates, prices or entry details changed
 - [ ] If they did, update `races.yaml` (including `status`, `confidence`, `source_url` and `last_verified`)
-- [ ] Close this issue
+- [ ] Close this issue"""
+    return f"""{marker(race.id)}
+{"A page" if len(results) == 1 else "Pages"} for **{race.name}** (`{race.id}`) changed on {now:%a %d %b %Y}.
+{diffs}
+{note}{todo}
 
-Menus, footers and scripts are ignored, so this is the page's visible text only.
+Menus, footers and scripts are ignored, so this is the pages' visible text only.
 """
 
 
@@ -90,13 +94,23 @@ class GitHubIssues:
         )
         self._labels_ready: set[str] = set()
 
-    def report_change(self, result: CheckResult, now: datetime, note: str = "") -> str:
-        """Comment on the page's open change issue if there is one, else open a new one. Returns its URL."""
-        body = change_report(result, now, note)
-        existing = self._find_open_issue(CHANGE_LABEL, marker(result.page.url))
+    def report_change(
+        self, race: Race, results: list[CheckResult], now: datetime, note: str = "", cleared: bool = False
+    ) -> str:
+        """One issue per race. Comment on its open issue if there is one, else open a new one (closed
+        straight away if the LLM cleared the change). Returns the issue or comment URL."""
+        body = change_report(race, results, now, note, cleared)
+        existing = self._find_open_issue(CHANGE_LABEL, marker(race.id))
         if existing:
             return self._comment(existing["number"], body)
-        return self._open(issue_title(result), body, CHANGE_LABEL)
+        url = self._open(issue_title(race, cleared), body, CHANGE_LABEL)
+        if cleared:
+            number = url.rstrip("/").rsplit("/", 1)[-1]
+            response = self._client.patch(
+                f"/repos/{self.repo}/issues/{number}", json={"state": "closed", "state_reason": "completed"}
+            )
+            response.raise_for_status()
+        return url
 
     def report_unreachable(self, result: CheckResult) -> str | None:
         """Open one issue per failing page; returns its URL, or None if one is already open."""
