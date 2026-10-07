@@ -104,10 +104,11 @@ races:
     location: Kew, London
     race_date: 2027-04-04
     entry_type: [general, charity]
+    price_gbp: 45
     official_url: https://run-fest.com/kew-the-run/kew-gardens-half/
     source_url: https://run-fest.com/kew-the-run/kew-gardens-half/
     status: announced
-    last_verified: 2026-10-02
+    last_verified: 2026-10-07
     confidence: confirmed
     notes: Standard entry until 31 Jan 2027, late entry until 31 Mar 2027
 
