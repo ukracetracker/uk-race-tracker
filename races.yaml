@@ -41,6 +41,8 @@ races:
     status: announced
     last_verified: 2026-10-02
     confidence: confirmed
+    # Site blocks GitHub's servers (HTTP 403 since 2 Oct 2026)
+    monitoring: manual
 
   - id: brighton-marathon-2027
     name: Brighton Marathon
@@ -153,6 +155,8 @@ races:
     status: ballot_open
     last_verified: 2026-10-02
     confidence: confirmed
+    # Site blocks GitHub's servers (HTTP 403 since 2 Oct 2026)
+    monitoring: manual
     notes: Free to enter the ballot; pay only if successful
 
   - id: royal-parks-half-2027
