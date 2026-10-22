@@ -163,10 +163,13 @@ races:
     name: Royal Parks Half
     distance: half
     location: London
+    race_date: 2027-10-10
     entry_type: [ballot, charity]
     official_url: https://www.royalparkshalf.com/
-    status: unannounced
-    confidence: estimated
+    source_url: https://www.royalparkshalf.com/
+    status: announced
+    last_verified: 2026-10-22
+    confidence: confirmed
     notes: Usually October. 2027 entry details not yet published
 
   - id: great-scottish-run-2027
